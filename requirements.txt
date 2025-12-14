@@ -1,15 +1,20 @@
-# YouTube Video Summarizer - Requirements File
-# Updated for Google Gemini API
-
 # Core dependencies
 youtube-transcript-api==1.2.1
 gradio==4.44.1
 
+# LangChain Framework (KEPT - Essential for project structure)
+langchain==0.2.6
+langchain-community==0.2.6
+langchain-google-genai==1.0.6  # NEW: LangChain integration for Gemini
+
 # Google Gemini API
 google-generativeai==0.3.2
 
-# Embeddings and Vector Search (Local, Free)
-sentence-transformers==2.2.2
+# Vector Store and Embeddings
+faiss-cpu==1.8.0  # KEPT - For vector similarity search
+sentence-transformers==2.2.2  # For local embeddings
+
+# Additional dependencies
 scikit-learn==1.3.2
 numpy==1.24.3
 
@@ -21,4 +26,3 @@ huggingface-hub==0.16.4
 
 # Optional: For better performance
 transformers==4.35.2
-torch==2.1.0

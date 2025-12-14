@@ -2,10 +2,11 @@
 import gradio as gr
 import re  # For extracting video id 
 from youtube_transcript_api import YouTubeTranscriptApi  # For extracting transcripts from YouTube videos
-from sentence_transformers import SentenceTransformer  # For creating embeddings locally
-import numpy as np  # For numerical operations
-from sklearn.metrics.pairwise import cosine_similarity  # For similarity calculations
-import google.generativeai as genai  # Google Gemini API for LLM
+from langchain.text_splitter import RecursiveCharacterTextSplitter  # For splitting text into manageable segments
+from langchain_community.vectorstores import FAISS  # For efficient vector storage and similarity search
+from langchain.chains import LLMChain  # For creating chains of operations with LLMs
+from langchain.prompts import PromptTemplate  # For defining prompt templates
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings  # For Gemini LLM and embeddings
 import os  # For environment variables
 from dotenv import load_dotenv  # For loading .env file
 
@@ -18,13 +19,12 @@ load_dotenv()
 # Get API key from environment variable
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 SERVER_NAME = os.getenv("GRADIO_SERVER_NAME", "0.0.0.0")
 SERVER_PORT = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
 
 # Configure Gemini API if key is available
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
     print("✅ Gemini API configured successfully!")
 else:
     print("⚠️ Warning: GEMINI_API_KEY not found in environment variables.")
@@ -138,295 +138,286 @@ def chunk_transcript(processed_transcript, chunk_size=200, chunk_overlap=20):
     Returns:
         list: List of text chunks
     """
-    # Split text by newlines to preserve structure
-    lines = processed_transcript.split('\n')
-    
-    chunks = []
-    current_chunk = []
-    current_size = 0
-    
-    for line in lines:
-        line_size = len(line.split())
-        
-        if current_size + line_size > chunk_size and current_chunk:
-            # Save current chunk
-            chunks.append('\n'.join(current_chunk))
-            
-            # Start new chunk with overlap
-            overlap_lines = current_chunk[-chunk_overlap:] if len(current_chunk) > chunk_overlap else current_chunk
-            current_chunk = overlap_lines + [line]
-            current_size = sum(len(l.split()) for l in current_chunk)
-        else:
-            current_chunk.append(line)
-            current_size += line_size
-    
-    # Add the last chunk
-    if current_chunk:
-        chunks.append('\n'.join(current_chunk))
-    
+    # Initialize the RecursiveCharacterTextSplitter with specified chunk size and overlap
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap
+    )
+
+    # Split the transcript into chunks
+    chunks = text_splitter.split_text(processed_transcript)
     return chunks
 
 
 # ============================================================================
-# GEMINI LLM SETUP
+# GEMINI LLM SETUP (Using LangChain)
 # ============================================================================
-def setup_gemini_model(model_name=None):
+def setup_credentials():
     """
-    Initialize and configure the Gemini model.
+    Set up credentials for Gemini API.
+    
+    Returns:
+        tuple: (model_id, api_key)
+    """
+    # Define the model ID for the Gemini model being used
+    model_id = GEMINI_MODEL
+    
+    # Get API key from environment
+    api_key = GEMINI_API_KEY
+    
+    # Return the model ID and API key for later use
+    return model_id, api_key
+
+
+def define_parameters():
+    """
+    Define parameters for the Gemini model.
+    
+    Returns:
+        dict: Model parameters
+    """
+    # Return a dictionary containing the parameters for the Gemini model
+    return {
+        "temperature": 0.1,  # Low temperature for more deterministic outputs
+        "max_output_tokens": 900,  # Maximum tokens to generate
+    }
+
+
+def initialize_gemini_llm(model_id, api_key, parameters):
+    """
+    Create and return an instance of the ChatGoogleGenerativeAI LLM.
     
     Args:
-        model_name (str): Name of the Gemini model to use
+        model_id (str): Model identifier
+        api_key (str): Google API key
+        parameters (dict): Model parameters
         
     Returns:
-        GenerativeModel: Configured Gemini model instance
+        ChatGoogleGenerativeAI: Gemini LLM instance
     """
-    if model_name is None:
-        model_name = GEMINI_MODEL
-    
-    # Create and return a Gemini model instance
-    model = genai.GenerativeModel(model_name)
-    return model
+    # Create and return an instance of ChatGoogleGenerativeAI with the specified configuration
+    return ChatGoogleGenerativeAI(
+        model=model_id,
+        google_api_key=api_key,
+        temperature=parameters.get("temperature", 0.1),
+        max_output_tokens=parameters.get("max_output_tokens", 900)
+    )
 
 
-def initialize_gemini_llm():
+# ============================================================================
+# EMBEDDING MODEL SETUP (Using LangChain)
+# ============================================================================
+def setup_embedding_model(api_key):
     """
-    Create and return an instance of the Gemini LLM with default configuration.
+    Create and return an instance of GoogleGenerativeAIEmbeddings.
     
+    Args:
+        api_key (str): Google API key
+        
     Returns:
-        GenerativeModel: Gemini model instance
+        GoogleGenerativeAIEmbeddings: Embedding model instance
     """
-    return setup_gemini_model()
+    # Create and return an instance of GoogleGenerativeAIEmbeddings
+    return GoogleGenerativeAIEmbeddings(
+        model="models/embedding-001",
+        google_api_key=api_key
+    )
 
 
 # ============================================================================
-# EMBEDDING MODEL SETUP
+# FAISS INDEX CREATION (Using LangChain)
 # ============================================================================
-def setup_embedding_model():
+def create_faiss_index(chunks, embedding_model):
     """
-    Create and return an instance of the embedding model.
-    This uses a local SentenceTransformer model (free and offline).
-    
-    Returns:
-        SentenceTransformer: Embedding model instance
-    """
-    # Load the embedding model from environment variable or use default
-    embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    return embedding_model
-
-
-# ============================================================================
-# VECTOR STORE CREATION
-# ============================================================================
-def create_vector_store(chunks, embedding_model):
-    """
-    Create embeddings for text chunks and store them in a simple vector store.
+    Create a FAISS index from text chunks using the specified embedding model.
     
     Args:
         chunks (list): List of text chunks
         embedding_model: The embedding model to use
         
     Returns:
-        tuple: (embeddings array, chunks list)
+        FAISS: FAISS index
     """
-    # Generate embeddings for all chunks
-    embeddings = embedding_model.encode(chunks, show_progress_bar=False)
-    
-    # Return both embeddings and chunks for later retrieval
-    return embeddings, chunks
+    # Use the FAISS library to create an index from the provided text chunks
+    return FAISS.from_texts(chunks, embedding_model)
 
 
 # ============================================================================
-# SIMILARITY SEARCH
+# SIMILARITY SEARCH (Using LangChain)
 # ============================================================================
-def perform_similarity_search(embeddings, chunks, query, embedding_model, k=3):
+def perform_similarity_search(faiss_index, query, k=3):
     """
-    Search for specific queries within the embedded transcript.
+    Search for specific queries within the embedded transcript using the FAISS index.
     
     Args:
-        embeddings (np.array): Embeddings of text chunks
-        chunks (list): Original text chunks
+        faiss_index: The FAISS index containing embedded text chunks
         query (str): The text input for the similarity search
-        embedding_model: Model to embed the query
-        k (int): The number of similar results to return
+        k (int): The number of similar results to return (default is 3)
         
     Returns:
-        list: List of most similar text chunks
+        list: List of similar results
     """
-    # Encode the query
-    query_embedding = embedding_model.encode([query])
-    
-    # Calculate cosine similarity
-    similarities = cosine_similarity(query_embedding, embeddings)[0]
-    
-    # Get top k indices
-    top_indices = np.argsort(similarities)[-k:][::-1]
-    
-    # Return the corresponding chunks
-    results = [chunks[i] for i in top_indices]
+    # Perform the similarity search using the FAISS index
+    results = faiss_index.similarity_search(query, k=k)
     return results
 
 
 # ============================================================================
-# SUMMARY PROMPT CREATION
+# SUMMARY PROMPT CREATION (Using LangChain)
 # ============================================================================
 def create_summary_prompt():
     """
-    Create a prompt template for summarizing a YouTube video transcript.
+    Create a PromptTemplate for summarizing a YouTube video transcript.
     
     Returns:
-        str: Prompt template for summarization
+        PromptTemplate: PromptTemplate object
     """
     # Define the template for the summary prompt
-    template = """You are an AI assistant tasked with summarizing YouTube video transcripts. Provide concise, informative summaries that capture the main points of the video content.
+    template = """
+    <|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    You are an AI assistant tasked with summarizing YouTube video transcripts. Provide concise, informative summaries that capture the main points of the video content.
 
-Instructions:
-1. Summarize the transcript in 2-3 concise paragraphs.
-2. Ignore any timestamps in your summary.
-3. Focus on the spoken content (Text) of the video.
-4. Highlight the key points and main ideas.
-5. Make the summary easy to understand and engaging.
+    Instructions:
+    1. Summarize the transcript in a single concise paragraph.
+    2. Ignore any timestamps in your summary.
+    3. Focus on the spoken content (Text) of the video.
 
-Note: In the transcript, "Text" refers to the spoken words in the video, and "start" indicates the timestamp when that part begins in the video.
+    Note: In the transcript, "Text" refers to the spoken words in the video, and "start" indicates the timestamp when that part begins in the video.<|eot_id|><|start_header_id|>user<|end_header_id|>
+    Please summarize the following YouTube video transcript:
 
-Please summarize the following YouTube video transcript:
-
-{transcript}
-
-Summary:"""
-    
-    return template
-
-
-# ============================================================================
-# SUMMARY GENERATION
-# ============================================================================
-def generate_summary(llm, prompt_template, transcript):
+    {transcript}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
     """
-    Generate a summary using the Gemini LLM.
+    
+    # Create the PromptTemplate object with the defined template
+    prompt = PromptTemplate(
+        input_variables=["transcript"],
+        template=template
+    )
+    
+    return prompt
+
+
+# ============================================================================
+# SUMMARY CHAIN CREATION (Using LangChain)
+# ============================================================================
+def create_summary_chain(llm, prompt, verbose=True):
+    """
+    Create an LLMChain for generating summaries.
     
     Args:
-        llm: Gemini model instance
-        prompt_template (str): Template for the summary prompt
-        transcript (str): The transcript to summarize
+        llm: Language model instance
+        prompt (PromptTemplate): PromptTemplate instance
+        verbose (bool): Boolean to enable verbose output (default: True)
         
     Returns:
-        str: Generated summary
+        LLMChain: LLMChain instance
     """
-    # Format the prompt with the transcript
-    prompt = prompt_template.replace("{transcript}", transcript[:8000])  # Limit to avoid token limits
-    
-    try:
-        # Generate summary using Gemini
-        response = llm.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"Error generating summary: {str(e)}"
+    return LLMChain(llm=llm, prompt=prompt, verbose=verbose)
 
 
 # ============================================================================
-# RETRIEVAL FUNCTION
+# RETRIEVAL FUNCTION (Using LangChain)
 # ============================================================================
-def retrieve(query, embeddings, chunks, embedding_model, k=7):
+def retrieve(query, faiss_index, k=7):
     """
-    Retrieve relevant context based on the user's query.
+    Retrieve relevant context from the FAISS index based on the user's query.
 
     Args:
         query (str): The user's query string
-        embeddings (np.array): Embeddings of text chunks
-        chunks (list): Original text chunks
-        embedding_model: Model to embed the query
-        k (int): The number of most relevant documents to retrieve
+        faiss_index (FAISS): The FAISS index containing the embedded documents
+        k (int): The number of most relevant documents to retrieve (default is 7)
 
     Returns:
-        list: A list of the k most relevant text chunks
+        list: A list of the k most relevant documents (or document chunks)
     """
-    relevant_context = perform_similarity_search(
-        embeddings, chunks, query, embedding_model, k=k
-    )
+    relevant_context = faiss_index.similarity_search(query, k=k)
     return relevant_context
 
 
 # ============================================================================
-# Q&A PROMPT CREATION
+# Q&A PROMPT CREATION (Using LangChain)
 # ============================================================================
 def create_qa_prompt_template():
     """
-    Create a prompt template for question answering based on video content.
+    Create a PromptTemplate for question answering based on video content.
     
     Returns:
-        str: Prompt template for Q&A
+        PromptTemplate: A PromptTemplate object configured for Q&A tasks
     """
     # Define the template string
-    qa_template = """You are an expert assistant providing detailed and accurate answers based on the following video content. Your responses should be:
-1. Precise and free from repetition
-2. Consistent with the information provided in the video
-3. Well-organized and easy to understand
-4. Focused on addressing the user's question directly
+    qa_template = """
+    <|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    You are an expert assistant providing detailed and accurate answers based on the following video content. Your responses should be:
+    1. Precise and free from repetition
+    2. Consistent with the information provided in the video
+    3. Well-organized and easy to understand
+    4. Focused on addressing the user's question directly
+    If you encounter conflicting information in the video content, use your best judgment to provide the most likely correct answer based on context.
+    Note: In the transcript, "Text" refers to the spoken words in the video, and "start" indicates the timestamp when that part begins in the video.<|eot_id|>
 
-If you encounter conflicting information in the video content, use your best judgment to provide the most likely correct answer based on context.
-
-If the provided context does not contain enough information to answer the question, please state that clearly.
-
-Note: In the transcript, "Text" refers to the spoken words in the video, and "start" indicates the timestamp when that part begins in the video.
-
-Relevant Video Context:
-{context}
-
-Based on the above context, please answer the following question:
-{question}
-
-Answer:"""
+    <|start_header_id|>user<|end_header_id|>
+    Relevant Video Context: {context}
+    Based on the above context, please answer the following question:
+    {question}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+    """
     
-    return qa_template
+    # Create the PromptTemplate object
+    prompt_template = PromptTemplate(
+        input_variables=["context", "question"],
+        template=qa_template
+    )
+    return prompt_template
 
 
 # ============================================================================
-# ANSWER GENERATION
+# Q&A CHAIN CREATION (Using LangChain)
 # ============================================================================
-def generate_answer(question, embeddings, chunks, embedding_model, llm, k=7):
+def create_qa_chain(llm, prompt_template, verbose=True):
+    """
+    Create an LLMChain for question answering.
+
+    Args:
+        llm: Language model instance
+        prompt_template (PromptTemplate): The prompt template to use
+        verbose (bool): Whether to enable verbose output for the chain
+
+    Returns:
+        LLMChain: An instantiated LLMChain ready for question answering
+    """
+    return LLMChain(llm=llm, prompt=prompt_template, verbose=verbose)
+
+
+# ============================================================================
+# ANSWER GENERATION (Using LangChain)
+# ============================================================================
+def generate_answer(question, faiss_index, qa_chain, k=7):
     """
     Retrieve relevant context and generate an answer based on user input.
 
     Args:
         question (str): The user's question
-        embeddings (np.array): Embeddings of text chunks
-        chunks (list): Original text chunks
-        embedding_model: Model to embed the query
-        llm: Gemini model instance
+        faiss_index (FAISS): The FAISS index containing the embedded documents
+        qa_chain (LLMChain): The question-answering chain to use
         k (int): The number of relevant documents to retrieve
 
     Returns:
         str: The generated answer to the user's question
     """
     # Retrieve relevant context
-    relevant_context = retrieve(question, embeddings, chunks, embedding_model, k=k)
-    
-    # Create the Q&A prompt
-    qa_template = create_qa_prompt_template()
-    
-    # Format the context
-    context_text = "\n\n".join(relevant_context)
-    
-    # Format the full prompt
-    prompt = qa_template.replace("{context}", context_text).replace("{question}", question)
-    
-    try:
-        # Generate answer using Gemini
-        response = llm.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"Error generating answer: {str(e)}"
+    relevant_context = retrieve(question, faiss_index, k=k)
+
+    # Generate answer using the QA chain
+    answer = qa_chain.predict(context=relevant_context, question=question)
+
+    return answer
 
 
 # ============================================================================
 # GLOBAL VARIABLES
 # ============================================================================
-# Initialize global variables to store state
+# Initialize an empty string to store the processed transcript after fetching and preprocessing
 fetched_transcript = None
 processed_transcript = ""
-embeddings = None
-chunks = []
-embedding_model = None
 
 
 # ============================================================================
@@ -460,34 +451,29 @@ Please follow these steps:
 Or set the environment variable:
 export GEMINI_API_KEY=your_actual_key_here"""
     
-    if not video_url:
-        return "Please provide a valid YouTube URL."
-    
-    try:
+    if video_url:
         # Fetch and preprocess transcript
         fetched_transcript = get_transcript(video_url)
-        
-        if not fetched_transcript:
-            return "Could not fetch transcript. Please ensure:\n1. The video has English captions available\n2. The URL is correct\n3. The video is publicly accessible"
-        
         processed_transcript = process(fetched_transcript)
-        
-        if not processed_transcript:
-            return "No transcript available. Please fetch the transcript first."
-        
-        # Step 1: Initialize Gemini LLM for summarization
-        llm = initialize_gemini_llm()
+    else:
+        return "Please provide a valid YouTube URL."
 
-        # Step 2: Create the summary prompt
+    if processed_transcript:
+        # Step 1: Set up Gemini credentials
+        model_id, api_key = setup_credentials()
+
+        # Step 2: Initialize Gemini LLM for summarization using LangChain
+        llm = initialize_gemini_llm(model_id, api_key, define_parameters())
+
+        # Step 3: Create the summary prompt and chain using LangChain
         summary_prompt = create_summary_prompt()
+        summary_chain = create_summary_chain(llm, summary_prompt)
 
-        # Step 3: Generate the video summary
-        summary = generate_summary(llm, summary_prompt, processed_transcript)
-        
+        # Step 4: Generate the video summary using LangChain
+        summary = summary_chain.run({"transcript": processed_transcript})
         return summary
-        
-    except Exception as e:
-        return f"An error occurred: {str(e)}\n\nPlease check your API key and internet connection."
+    else:
+        return "No transcript available. Please fetch the transcript first."
 
 
 # ============================================================================
@@ -498,7 +484,7 @@ def answer_question(video_url, user_question):
     Title: Answer User's Question
 
     Description:
-    This function retrieves relevant context from the vector store based on the user's query 
+    This function retrieves relevant context from the FAISS index based on the user's query 
     and generates an answer using the preprocessed transcript.
     If the transcript hasn't been fetched yet, it fetches it first.
 
@@ -510,7 +496,7 @@ def answer_question(video_url, user_question):
         str: The answer to the user's question or a message indicating that the transcript 
              has not been fetched.
     """
-    global fetched_transcript, processed_transcript, embeddings, chunks, embedding_model
+    global fetched_transcript, processed_transcript
 
     # Check if API key is configured
     if not GEMINI_API_KEY:
@@ -527,46 +513,33 @@ export GEMINI_API_KEY=your_actual_key_here"""
     # Check if the transcript needs to be fetched
     if not processed_transcript:
         if video_url:
-            try:
-                # Fetch and preprocess transcript
-                fetched_transcript = get_transcript(video_url)
-                
-                if not fetched_transcript:
-                    return "Could not fetch transcript. Please ensure:\n1. The video has English captions available\n2. The URL is correct\n3. The video is publicly accessible"
-                
-                processed_transcript = process(fetched_transcript)
-            except Exception as e:
-                return f"Error fetching transcript: {str(e)}"
+            # Fetch and preprocess transcript
+            fetched_transcript = get_transcript(video_url)
+            processed_transcript = process(fetched_transcript)
         else:
             return "Please provide a valid YouTube URL."
 
-    if not user_question:
-        return "Please provide a valid question."
-
     if processed_transcript and user_question:
-        try:
-            # Step 1: Chunk the transcript (only for Q&A)
-            if not chunks:
-                chunks = chunk_transcript(processed_transcript)
+        # Step 1: Chunk the transcript using LangChain
+        chunks = chunk_transcript(processed_transcript)
 
-            # Step 2: Initialize embedding model (only once)
-            if embedding_model is None:
-                embedding_model = setup_embedding_model()
+        # Step 2: Set up Gemini credentials
+        model_id, api_key = setup_credentials()
 
-            # Step 3: Create embeddings for transcript chunks (only needed for Q&A)
-            if embeddings is None:
-                embeddings, chunks = create_vector_store(chunks, embedding_model)
+        # Step 3: Initialize Gemini LLM for Q&A using LangChain
+        llm = initialize_gemini_llm(model_id, api_key, define_parameters())
 
-            # Step 4: Initialize Gemini LLM for Q&A
-            llm = initialize_gemini_llm()
+        # Step 4: Create FAISS index for transcript chunks using LangChain
+        embedding_model = setup_embedding_model(api_key)
+        faiss_index = create_faiss_index(chunks, embedding_model)
 
-            # Step 5: Generate the answer
-            answer = generate_answer(user_question, embeddings, chunks, embedding_model, llm)
-            
-            return answer
-            
-        except Exception as e:
-            return f"An error occurred: {str(e)}\n\nPlease check your API key and internet connection."
+        # Step 5: Set up the Q&A prompt and chain using LangChain
+        qa_prompt = create_qa_prompt_template()
+        qa_chain = create_qa_chain(llm, qa_prompt)
+
+        # Step 6: Generate the answer using FAISS index and LangChain
+        answer = generate_answer(user_question, faiss_index, qa_chain)
+        return answer
     else:
         return "Please provide a valid question and ensure the transcript has been fetched."
 
@@ -579,7 +552,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as interface:
     gr.Markdown(
         """
         # 🎥 YouTube Video Summarizer and Q&A
-        ### Powered by Google Gemini API (Free Tier Available)
+        ### Powered by Google Gemini API + LangChain
         
         ---
         
@@ -590,11 +563,12 @@ with gr.Blocks(theme=gr.themes.Soft()) as interface:
         4. Install requirements: `pip install -r requirements.txt`
         
         **✨ Features:**
-        - 📝 Generate comprehensive video summaries
-        - ❓ Ask questions about video content
-        - 🔍 Smart context retrieval using embeddings
+        - 📝 Generate comprehensive video summaries using LangChain
+        - ❓ Ask questions about video content with LangChain Q&A chains
+        - 🔍 Smart context retrieval using FAISS vector store
         - 🆓 Completely free with Gemini API
         - 🔐 Secure API key management with environment variables
+        - 🔗 Full LangChain integration maintained
         
         ---
         """
@@ -631,6 +605,9 @@ with gr.Blocks(theme=gr.themes.Soft()) as interface:
             placeholder="Your answer will appear here..."
         )
 
+    # Display status message for transcript fetch
+    transcript_status = gr.Textbox(label="Transcript Status", interactive=False, visible=False)
+
     # Set up button actions
     summarize_btn.click(summarize_video, inputs=video_url, outputs=summary_output)
     question_btn.click(answer_question, inputs=[video_url, question_input], outputs=answer_output)
@@ -654,14 +631,21 @@ with gr.Blocks(theme=gr.themes.Soft()) as interface:
         - Your API key is stored securely in the .env file
         - Never share your .env file or commit it to version control
         - The .gitignore file is configured to protect your credentials
+        
+        **🔗 LangChain Components Used:**
+        - LLMChain for summarization and Q&A
+        - PromptTemplate for structured prompts
+        - FAISS for vector storage
+        - RecursiveCharacterTextSplitter for text chunking
+        - GoogleGenerativeAIEmbeddings for embeddings
         """
     )
 
 # Launch the app with specified server name and port
 if __name__ == "__main__":
-    print(f"🚀 Starting YouTube Video Summarizer...")
+    print(f"🚀 Starting YouTube Video Summarizer with LangChain...")
     print(f"📡 Server: {SERVER_NAME}:{SERVER_PORT}")
     print(f"🤖 Model: {GEMINI_MODEL}")
-    print(f"📊 Embedding Model: {EMBEDDING_MODEL_NAME}")
+    print(f"🔗 Using LangChain for orchestration")
     
     interface.launch(server_name=SERVER_NAME, server_port=SERVER_PORT)
