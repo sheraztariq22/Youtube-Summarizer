@@ -317,21 +317,25 @@ def initialize_gemini_llm(model_id, api_key, parameters):
 # ============================================================================
 # EMBEDDING MODEL SETUP (Using LangChain)
 # ============================================================================
-def setup_embedding_model(api_key):
+def setup_embedding_model(api_key=None):
     """
-    Create and return an instance of GoogleGenerativeAIEmbeddings.
+    Create and return an instance of a local embedding model.
+    Uses SentenceTransformer instead of Google's API (which has quota limits).
     
     Args:
-        api_key (str): Google API key
+        api_key (str): Not used, kept for compatibility
         
     Returns:
-        GoogleGenerativeAIEmbeddings: Embedding model instance
+        SentenceTransformer: Local embedding model instance
     """
-    # Create and return an instance of GoogleGenerativeAIEmbeddings
-    return GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=api_key
-    )
+    # Use local SentenceTransformer model (free, no API quota limits)
+    from sentence_transformers import SentenceTransformer
+    
+    print("📊 Loading local embedding model (all-MiniLM-L6-v2)...")
+    embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+    print("✅ Embedding model loaded successfully")
+    
+    return embedding_model
 
 
 # ============================================================================
@@ -339,17 +343,26 @@ def setup_embedding_model(api_key):
 # ============================================================================
 def create_faiss_index(chunks, embedding_model):
     """
-    Create a FAISS index from text chunks using the specified embedding model.
+    Create a FAISS index from text chunks using the local embedding model.
     
     Args:
         chunks (list): List of text chunks
-        embedding_model: The embedding model to use
+        embedding_model: SentenceTransformer model
         
     Returns:
-        FAISS: FAISS index
+        tuple: (embeddings array, chunks list) for manual similarity search
     """
-    # Use the FAISS library to create an index from the provided text chunks
-    return FAISS.from_texts(chunks, embedding_model)
+    import numpy as np
+    
+    print(f"🔢 Creating embeddings for {len(chunks)} chunks...")
+    
+    # Generate embeddings using local model
+    embeddings = embedding_model.encode(chunks, show_progress_bar=True)
+    
+    print(f"✅ Embeddings created: shape {embeddings.shape}")
+    
+    # Return embeddings and chunks for later similarity search
+    return embeddings, chunks
 
 
 # ============================================================================
@@ -440,20 +453,36 @@ def create_summary_chain(llm, prompt, verbose=True):
 # ============================================================================
 # RETRIEVAL FUNCTION (Using LangChain)
 # ============================================================================
-def retrieve(query, faiss_index, k=7):
+def retrieve(query, embeddings, chunks, embedding_model, k=7):
     """
-    Retrieve relevant context from the FAISS index based on the user's query.
+    Retrieve relevant context based on the user's query using cosine similarity.
 
     Args:
         query (str): The user's query string
-        faiss_index (FAISS): The FAISS index containing the embedded documents
-        k (int): The number of most relevant documents to retrieve (default is 7)
+        embeddings (np.array): Embeddings of chunks
+        chunks (list): Original text chunks
+        embedding_model: SentenceTransformer model
+        k (int): The number of most relevant documents to retrieve
 
     Returns:
-        list: A list of the k most relevant documents (or document chunks)
+        list: A list of the k most relevant text chunks
     """
-    relevant_context = faiss_index.similarity_search(query, k=k)
-    return relevant_context
+    from sklearn.metrics.pairwise import cosine_similarity
+    import numpy as np
+    
+    # Encode the query
+    query_embedding = embedding_model.encode([query])
+    
+    # Calculate similarities
+    similarities = cosine_similarity(query_embedding, embeddings)[0]
+    
+    # Get top k indices
+    top_indices = np.argsort(similarities)[-k:][::-1]
+    
+    # Return relevant chunks
+    relevant_chunks = [chunks[i] for i in top_indices]
+    
+    return relevant_chunks
 
 
 # ============================================================================
@@ -524,34 +553,50 @@ def create_qa_chain(llm, prompt_template, verbose=True):
 # ============================================================================
 # ANSWER GENERATION (Using LangChain)
 # ============================================================================
-def generate_answer(question, faiss_index, qa_chain, k=7):
+def generate_answer(question, embeddings, chunks, embedding_model, llm, k=7):
     """
     Retrieve relevant context and generate an answer based on user input.
 
     Args:
         question (str): The user's question
-        faiss_index (FAISS): The FAISS index containing the embedded documents
-        qa_chain (LLMChain): The question-answering chain to use
+        embeddings (np.array): Embeddings of chunks
+        chunks (list): Original text chunks
+        embedding_model: SentenceTransformer model
+        llm: Gemini model instance
         k (int): The number of relevant documents to retrieve
 
     Returns:
         str: The generated answer to the user's question
     """
     # Retrieve relevant context
-    relevant_context = retrieve(question, faiss_index, k=k)
-
-    # Generate answer using the QA chain
-    answer = qa_chain.predict(context=relevant_context, question=question)
-
-    return answer
+    relevant_context = retrieve(question, embeddings, chunks, embedding_model, k=k)
+    
+    # Create the Q&A prompt
+    qa_template = create_qa_prompt_template()
+    
+    # Format the context
+    context_text = "\n\n".join(relevant_context)
+    
+    # Format the full prompt
+    prompt = qa_template.format(context=context_text, question=question)
+    
+    try:
+        # Generate answer using Gemini
+        response = llm.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Error generating answer: {str(e)}"
 
 
 # ============================================================================
 # GLOBAL VARIABLES
 # ============================================================================
-# Initialize an empty string to store the processed transcript after fetching and preprocessing
+# Initialize global variables to store state
 fetched_transcript = None
 processed_transcript = ""
+embeddings = None
+chunks = []
+embedding_model = None
 
 
 # ============================================================================
