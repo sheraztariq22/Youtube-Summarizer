@@ -153,30 +153,68 @@ def get_transcript(url):
 def process(transcript):
     """
     Process the transcript into a formatted string.
+    Compatible with youtube-transcript-api v1.2.1 (FetchedTranscriptSnippet objects)
     
     Args:
-        transcript (list): Raw transcript data
+        transcript: FetchedTranscript object (iterable of FetchedTranscriptSnippet)
         
     Returns:
         str: Processed transcript text
     """
-    # Check if transcript is None or empty
+    # Check if transcript is None
     if transcript is None:
+        print("⚠️ process() received None transcript")
         return ""
+    
+    # Check length
+    try:
+        transcript_length = len(transcript)
+    except:
+        print("⚠️ Cannot determine transcript length")
+        return ""
+    
+    if transcript_length == 0:
+        print("⚠️ process() received empty transcript")
+        return ""
+    
+    print(f"📝 Processing transcript with {transcript_length} entries")
     
     # Initialize an empty string to hold the formatted transcript
     txt = ""
+    successful_entries = 0
     
     # Loop through each entry in the transcript
-    for i in transcript:
+    for idx, item in enumerate(transcript):
         try:
-            # Append the text and its start time to the output string
-            txt += f"Text: {i['text']} Start: {i['start']}\n"
-        except (KeyError, TypeError):
-            # If there is an issue accessing 'text' or 'start', skip this entry
-            pass
+            # For v1.2.1: FetchedTranscriptSnippet objects have .text, .start, .duration attributes
+            text = item.text
+            start = item.start
+            txt += f"Text: {text} Start: {start}\n"
+            successful_entries += 1
             
-    # Return the processed transcript as a single string
+            # Debug first entry only
+            if idx == 0:
+                print(f"✅ First entry processed successfully:")
+                print(f"   Type: {type(item).__name__}")
+                print(f"   Text: {text[:50]}...")
+                print(f"   Start: {start}")
+                
+        except AttributeError as e:
+            if idx == 0:
+                print(f"❌ AttributeError on first entry: {e}")
+                print(f"   Item type: {type(item)}")
+                print(f"   Has .text? {hasattr(item, 'text')}")
+                print(f"   Has .start? {hasattr(item, 'start')}")
+        except Exception as e:
+            if idx == 0:
+                print(f"❌ Unexpected error on first entry: {type(e).__name__}: {e}")
+    
+    print(f"📊 Successfully processed {successful_entries}/{transcript_length} entries")
+    print(f"📊 Total text length: {len(txt)} characters")
+    
+    if len(txt) == 0:
+        print("⚠️ WARNING: Processed text is empty!")
+    
     return txt
 
 
@@ -525,7 +563,12 @@ export GEMINI_API_KEY=your_actual_key_here"""
 
 Example format: https://www.youtube.com/watch?v=VIDEO_ID"""
         
+        print(f"\n🎯 About to process transcript with {len(fetched_transcript)} entries")
+        print(f"🎯 Type of fetched_transcript: {type(fetched_transcript)}")
+        
         processed_transcript = process(fetched_transcript)
+        
+        print(f"\n🎯 After processing, transcript length: {len(processed_transcript)} chars")
         
         if not processed_transcript:
             return "⚠️ Transcript was fetched but appears to be empty. Please try another video."
