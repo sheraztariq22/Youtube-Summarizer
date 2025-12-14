@@ -6,17 +6,29 @@ from sentence_transformers import SentenceTransformer  # For creating embeddings
 import numpy as np  # For numerical operations
 from sklearn.metrics.pairwise import cosine_similarity  # For similarity calculations
 import google.generativeai as genai  # Google Gemini API for LLM
-import time  # For handling rate limits
+import os  # For environment variables
+from dotenv import load_dotenv  # For loading .env file
 
 # ============================================================================
-# CONFIGURATION SECTION - SET YOUR API KEY HERE
+# LOAD ENVIRONMENT VARIABLES
 # ============================================================================
-# Get your free API key from: https://makersuite.google.com/app/apikey
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"
+# Load environment variables from .env file
+load_dotenv()
 
-# Configure Gemini API
-if GEMINI_API_KEY and GEMINI_API_KEY != "YOUR_GEMINI_API_KEY_HERE":
+# Get API key from environment variable
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+SERVER_NAME = os.getenv("GRADIO_SERVER_NAME", "0.0.0.0")
+SERVER_PORT = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
+
+# Configure Gemini API if key is available
+if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+    print("✅ Gemini API configured successfully!")
+else:
+    print("⚠️ Warning: GEMINI_API_KEY not found in environment variables.")
+    print("Please create a .env file with your API key.")
 
 # ============================================================================
 # VIDEO ID EXTRACTION
@@ -158,7 +170,7 @@ def chunk_transcript(processed_transcript, chunk_size=200, chunk_overlap=20):
 # ============================================================================
 # GEMINI LLM SETUP
 # ============================================================================
-def setup_gemini_model(model_name="gemini-1.5-flash"):
+def setup_gemini_model(model_name=None):
     """
     Initialize and configure the Gemini model.
     
@@ -168,6 +180,9 @@ def setup_gemini_model(model_name="gemini-1.5-flash"):
     Returns:
         GenerativeModel: Configured Gemini model instance
     """
+    if model_name is None:
+        model_name = GEMINI_MODEL
+    
     # Create and return a Gemini model instance
     model = genai.GenerativeModel(model_name)
     return model
@@ -180,7 +195,7 @@ def initialize_gemini_llm():
     Returns:
         GenerativeModel: Gemini model instance
     """
-    return setup_gemini_model("gemini-1.5-flash")
+    return setup_gemini_model()
 
 
 # ============================================================================
@@ -194,9 +209,8 @@ def setup_embedding_model():
     Returns:
         SentenceTransformer: Embedding model instance
     """
-    # Load the all-MiniLM-L6-v2 model for embeddings
-    # This model is lightweight and runs locally
-    embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+    # Load the embedding model from environment variable or use default
+    embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
     return embedding_model
 
 
@@ -435,8 +449,16 @@ def summarize_video(video_url):
     global fetched_transcript, processed_transcript
     
     # Check if API key is configured
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
-        return "⚠️ Please set your Gemini API key in the code.\n\nGet your free API key from: https://makersuite.google.com/app/apikey"
+    if not GEMINI_API_KEY:
+        return """⚠️ Gemini API key not found!
+
+Please follow these steps:
+1. Create a .env file in the project directory
+2. Add your API key: GEMINI_API_KEY=your_actual_key_here
+3. Get a free API key from: https://makersuite.google.com/app/apikey
+
+Or set the environment variable:
+export GEMINI_API_KEY=your_actual_key_here"""
     
     if not video_url:
         return "Please provide a valid YouTube URL."
@@ -491,8 +513,16 @@ def answer_question(video_url, user_question):
     global fetched_transcript, processed_transcript, embeddings, chunks, embedding_model
 
     # Check if API key is configured
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
-        return "⚠️ Please set your Gemini API key in the code.\n\nGet your free API key from: https://makersuite.google.com/app/apikey"
+    if not GEMINI_API_KEY:
+        return """⚠️ Gemini API key not found!
+
+Please follow these steps:
+1. Create a .env file in the project directory
+2. Add your API key: GEMINI_API_KEY=your_actual_key_here
+3. Get a free API key from: https://makersuite.google.com/app/apikey
+
+Or set the environment variable:
+export GEMINI_API_KEY=your_actual_key_here"""
 
     # Check if the transcript needs to be fetched
     if not processed_transcript:
@@ -554,15 +584,17 @@ with gr.Blocks(theme=gr.themes.Soft()) as interface:
         ---
         
         **📋 Setup Instructions:**
-        1. Get your free API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
-        2. Replace `YOUR_GEMINI_API_KEY_HERE` in the code with your actual key
-        3. Install required packages: `pip install gradio youtube-transcript-api google-generativeai sentence-transformers scikit-learn`
+        1. Create a `.env` file in the project directory
+        2. Add your Gemini API key: `GEMINI_API_KEY=your_key_here`
+        3. Get your free API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+        4. Install requirements: `pip install -r requirements.txt`
         
         **✨ Features:**
         - 📝 Generate comprehensive video summaries
         - ❓ Ask questions about video content
         - 🔍 Smart context retrieval using embeddings
         - 🆓 Completely free with Gemini API
+        - 🔐 Secure API key management with environment variables
         
         ---
         """
@@ -614,12 +646,22 @@ with gr.Blocks(theme=gr.themes.Soft()) as interface:
         - You can ask multiple questions about the same video
         
         **🔧 Troubleshooting:**
-        - If you get an API key error, make sure you've set it correctly in the code
-        - If transcript fetch fails, check if the video has captions enabled
+        - If you get an API key error, check your .env file
+        - If transcript fetch fails, verify the video has captions enabled
         - For rate limit errors, wait a few moments and try again
+        
+        **🔐 Security:**
+        - Your API key is stored securely in the .env file
+        - Never share your .env file or commit it to version control
+        - The .gitignore file is configured to protect your credentials
         """
     )
 
 # Launch the app with specified server name and port
 if __name__ == "__main__":
-    interface.launch(server_name="0.0.0.0", server_port=7860)
+    print(f"🚀 Starting YouTube Video Summarizer...")
+    print(f"📡 Server: {SERVER_NAME}:{SERVER_PORT}")
+    print(f"🤖 Model: {GEMINI_MODEL}")
+    print(f"📊 Embedding Model: {EMBEDDING_MODEL_NAME}")
+    
+    interface.launch(server_name=SERVER_NAME, server_port=SERVER_PORT)
