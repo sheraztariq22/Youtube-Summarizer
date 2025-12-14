@@ -3,10 +3,10 @@ import gradio as gr
 import re  # For extracting video id 
 from youtube_transcript_api import YouTubeTranscriptApi  # For extracting transcripts from YouTube videos
 from langchain.text_splitter import RecursiveCharacterTextSplitter  # For splitting text into manageable segments
-from langchain_community.vectorstores import FAISS  # For efficient vector storage and similarity search
-from langchain.chains import LLMChain  # For creating chains of operations with LLMs
 from langchain.prompts import PromptTemplate  # For defining prompt templates
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings  # For Gemini LLM and embeddings
+from sentence_transformers import SentenceTransformer  # For local embeddings (imported at top to avoid issues)
+import numpy as np  # For numerical operations
+from sklearn.metrics.pairwise import cosine_similarity  # For similarity calculations
 import os  # For environment variables
 from dotenv import load_dotenv  # For loading .env file
 
@@ -329,8 +329,6 @@ def setup_embedding_model(api_key=None):
         SentenceTransformer: Local embedding model instance
     """
     # Use local SentenceTransformer model (free, no API quota limits)
-    from sentence_transformers import SentenceTransformer
-    
     print("📊 Loading local embedding model (all-MiniLM-L6-v2)...")
     embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
     print("✅ Embedding model loaded successfully")
