@@ -280,7 +280,8 @@ def define_parameters():
 
 def initialize_gemini_llm(model_id, api_key, parameters):
     """
-    Create and return an instance of the ChatGoogleGenerativeAI LLM.
+    Create and return an instance of the Gemini LLM.
+    Uses direct google.generativeai instead of LangChain wrapper for better compatibility.
     
     Args:
         model_id (str): Model identifier
@@ -288,15 +289,29 @@ def initialize_gemini_llm(model_id, api_key, parameters):
         parameters (dict): Model parameters
         
     Returns:
-        ChatGoogleGenerativeAI: Gemini LLM instance
+        GenerativeModel: Gemini model instance
     """
-    # Create and return an instance of ChatGoogleGenerativeAI with the specified configuration
-    return ChatGoogleGenerativeAI(
-        model=model_id,
-        google_api_key=api_key,
-        temperature=parameters.get("temperature", 0.1),
-        max_output_tokens=parameters.get("max_output_tokens", 900)
+    # Configure the API
+    import google.generativeai as genai
+    genai.configure(api_key=api_key)
+    
+    # Extract model name - if it starts with "models/", keep it; otherwise add it
+    if not model_id.startswith("models/"):
+        model_id = f"models/{model_id}"
+    
+    # Create generation config
+    generation_config = {
+        "temperature": parameters.get("temperature", 0.1),
+        "max_output_tokens": parameters.get("max_output_tokens", 900),
+    }
+    
+    # Return the model
+    model = genai.GenerativeModel(
+        model_name=model_id,
+        generation_config=generation_config
     )
+    
+    return model
 
 
 # ============================================================================
@@ -397,17 +412,29 @@ def create_summary_prompt():
 # ============================================================================
 def create_summary_chain(llm, prompt, verbose=True):
     """
-    Create an LLMChain for generating summaries.
+    Create a wrapper for generating summaries (compatible with direct Gemini API).
     
     Args:
-        llm: Language model instance
+        llm: Gemini model instance
         prompt (PromptTemplate): PromptTemplate instance
         verbose (bool): Boolean to enable verbose output (default: True)
         
     Returns:
-        LLMChain: LLMChain instance
+        dict: Wrapper object with run method
     """
-    return LLMChain(llm=llm, prompt=prompt, verbose=verbose)
+    class GeminiChainWrapper:
+        def __init__(self, model, prompt_template):
+            self.model = model
+            self.prompt_template = prompt_template
+        
+        def run(self, inputs):
+            # Format the prompt
+            formatted_prompt = self.prompt_template.format(**inputs)
+            # Generate response
+            response = self.model.generate_content(formatted_prompt)
+            return response.text
+    
+    return GeminiChainWrapper(llm, prompt)
 
 
 # ============================================================================
@@ -469,17 +496,29 @@ def create_qa_prompt_template():
 # ============================================================================
 def create_qa_chain(llm, prompt_template, verbose=True):
     """
-    Create an LLMChain for question answering.
+    Create a wrapper for question answering (compatible with direct Gemini API).
 
     Args:
-        llm: Language model instance
+        llm: Gemini model instance
         prompt_template (PromptTemplate): The prompt template to use
         verbose (bool): Whether to enable verbose output for the chain
 
     Returns:
-        LLMChain: An instantiated LLMChain ready for question answering
+        Wrapper object with predict method
     """
-    return LLMChain(llm=llm, prompt=prompt_template, verbose=verbose)
+    class GeminiQAWrapper:
+        def __init__(self, model, prompt_template):
+            self.model = model
+            self.prompt_template = prompt_template
+        
+        def predict(self, **kwargs):
+            # Format the prompt
+            formatted_prompt = self.prompt_template.format(**kwargs)
+            # Generate response
+            response = self.model.generate_content(formatted_prompt)
+            return response.text
+    
+    return GeminiQAWrapper(llm, prompt_template)
 
 
 # ============================================================================
