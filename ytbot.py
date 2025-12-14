@@ -43,10 +43,24 @@ def get_video_id(url):
     Returns:
         str: Video ID or None if not found
     """
-    # Regex pattern to match YouTube video URLs
-    pattern = r'https:\/\/www\.youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})'
-    match = re.search(pattern, url)
-    return match.group(1) if match else None
+    # Multiple regex patterns to match different YouTube URL formats
+    patterns = [
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})',  # Standard format
+        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})',  # Short format with parameters
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})',  # Embed format
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/v\/([a-zA-Z0-9_-]{11})',  # Old format
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})',  # Shorts format
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            video_id = match.group(1)
+            # Clean up any remaining parameters (e.g., ?si=xxx or &t=xxx)
+            video_id = video_id.split('?')[0].split('&')[0]
+            return video_id
+    
+    return None
 
 
 # ============================================================================
@@ -66,31 +80,43 @@ def get_transcript(url):
     video_id = get_video_id(url)
     
     if not video_id:
+        print(f"❌ Could not extract video ID from URL: {url}")
         return None
 
     try:
-        # Create a YouTubeTranscriptApi() object
-        ytt_api = YouTubeTranscriptApi()
+        print(f"🔍 Fetching transcript for video ID: {video_id}")
         
         # Fetch the list of available transcripts for the given YouTube video
-        transcripts = ytt_api.list(video_id)
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         
-        transcript = ""
-        for t in transcripts:
-            # Check if the transcript's language is English
-            if t.language_code == 'en':
-                if t.is_generated:
-                    # If no transcript has been set yet, use the auto-generated one
-                    if len(transcript) == 0:
-                        transcript = t.fetch()
-                else:
-                    # If a manually created transcript is found, use it (overrides auto-generated)
-                    transcript = t.fetch()
-                    break  # Prioritize the manually created transcript, exit the loop
+        transcript = None
         
-        return transcript if transcript else None
+        # Try to find English transcript (manual first, then auto-generated)
+        try:
+            # Try to get manual English transcript first
+            transcript = transcript_list.find_transcript(['en'])
+            print(f"✅ Found English transcript (manual: {not transcript.is_generated})")
+            return transcript.fetch()
+        except:
+            # If manual English not found, try auto-generated
+            try:
+                transcript = transcript_list.find_generated_transcript(['en'])
+                print(f"✅ Found auto-generated English transcript")
+                return transcript.fetch()
+            except:
+                print(f"❌ No English transcript found for video {video_id}")
+                
+                # Try to list all available transcripts for debugging
+                try:
+                    available = [t.language_code for t in transcript_list]
+                    print(f"Available languages: {', '.join(available)}")
+                except:
+                    pass
+                
+                return None
+        
     except Exception as e:
-        print(f"Error fetching transcript: {e}")
+        print(f"❌ Error fetching transcript: {e}")
         return None
 
 
@@ -107,6 +133,10 @@ def process(transcript):
     Returns:
         str: Processed transcript text
     """
+    # Check if transcript is None or empty
+    if transcript is None:
+        return ""
+    
     # Initialize an empty string to hold the formatted transcript
     txt = ""
     
@@ -451,12 +481,29 @@ Please follow these steps:
 Or set the environment variable:
 export GEMINI_API_KEY=your_actual_key_here"""
     
-    if video_url:
+    if not video_url:
+        return "Please provide a valid YouTube URL."
+    
+    try:
         # Fetch and preprocess transcript
         fetched_transcript = get_transcript(video_url)
+        
+        # Check if transcript was successfully fetched
+        if fetched_transcript is None:
+            return """❌ Could not fetch transcript. Please ensure:
+1. The video has English captions available (auto-generated or manual)
+2. The URL is correct and properly formatted
+3. The video is publicly accessible
+4. Try enabling captions on YouTube first
+
+Example format: https://www.youtube.com/watch?v=VIDEO_ID"""
+        
         processed_transcript = process(fetched_transcript)
-    else:
-        return "Please provide a valid YouTube URL."
+        
+        if not processed_transcript:
+            return "⚠️ Transcript was fetched but appears to be empty. Please try another video."
+    except Exception as e:
+        return f"❌ Error fetching transcript: {str(e)}\n\nPlease check the URL and try again."
 
     if processed_transcript:
         # Step 1: Set up Gemini credentials
@@ -648,4 +695,4 @@ if __name__ == "__main__":
     print(f"🤖 Model: {GEMINI_MODEL}")
     print(f"🔗 Using LangChain for orchestration")
     
-    interface.launch(server_name=SERVER_NAME, server_port=SERVER_PORT)
+    interface.launch(server_name=SERVER_NAME, server_port=SERVER_PORT, share=True)
