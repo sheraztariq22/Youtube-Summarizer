@@ -69,6 +69,7 @@ def get_video_id(url):
 def get_transcript(url):
     """
     Extracts the transcript from a YouTube video.
+    Compatible with youtube-transcript-api v1.2.1
     
     Args:
         url (str): YouTube video URL
@@ -86,37 +87,63 @@ def get_transcript(url):
     try:
         print(f"🔍 Fetching transcript for video ID: {video_id}")
         
-        # Fetch the list of available transcripts for the given YouTube video
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # Create YouTubeTranscriptApi instance (for v1.2.1)
+        api = YouTubeTranscriptApi()
         
-        transcript = None
-        
-        # Try to find English transcript (manual first, then auto-generated)
+        # Method 1: Try to get transcript list
         try:
-            # Try to get manual English transcript first
-            transcript = transcript_list.find_transcript(['en'])
-            print(f"✅ Found English transcript (manual: {not transcript.is_generated})")
-            return transcript.fetch()
-        except:
-            # If manual English not found, try auto-generated
-            try:
-                transcript = transcript_list.find_generated_transcript(['en'])
-                print(f"✅ Found auto-generated English transcript")
-                return transcript.fetch()
-            except:
-                print(f"❌ No English transcript found for video {video_id}")
+            print(f"📋 Listing available transcripts...")
+            transcript_list = api.list(video_id)
+            
+            # Debug: Show available transcripts
+            available = []
+            for t in transcript_list:
+                lang_info = f"{t.language_code}"
+                if t.is_generated:
+                    lang_info += " (auto)"
+                available.append(lang_info)
+            print(f"   Available: {', '.join(available)}")
+            
+            # Try to find English transcript
+            transcript_data = None
+            for t in transcript_list:
+                if t.language_code == 'en':
+                    print(f"✅ Found English transcript ({'auto-generated' if t.is_generated else 'manual'})")
+                    transcript_data = t.fetch()
+                    break
+            
+            if transcript_data:
+                print(f"   Total entries: {len(transcript_data)}")
+                return transcript_data
+            else:
+                print(f"⚠️ No English transcript found")
                 
-                # Try to list all available transcripts for debugging
-                try:
-                    available = [t.language_code for t in transcript_list]
-                    print(f"Available languages: {', '.join(available)}")
-                except:
-                    pass
+                # Try to translate from first available language
+                if transcript_list:
+                    try:
+                        print(f"🔄 Attempting translation to English...")
+                        first_transcript = transcript_list[0]
+                        print(f"   Translating from: {first_transcript.language_code}")
+                        translated = first_transcript.translate('en')
+                        transcript_data = translated.fetch()
+                        print(f"✅ Successfully translated!")
+                        print(f"   Total entries: {len(transcript_data)}")
+                        return transcript_data
+                    except Exception as e:
+                        print(f"❌ Translation failed: {e}")
                 
                 return None
+                
+        except Exception as e:
+            print(f"❌ Error listing transcripts: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
         
     except Exception as e:
-        print(f"❌ Error fetching transcript: {e}")
+        print(f"❌ Fatal error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
