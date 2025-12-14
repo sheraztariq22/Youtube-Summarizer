@@ -18,7 +18,7 @@ load_dotenv()
 
 # Get API key from environment variable
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-pro")  # Use gemini-pro for v1beta compatibility
 SERVER_NAME = os.getenv("GRADIO_SERVER_NAME", "0.0.0.0")
 SERVER_PORT = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
 
