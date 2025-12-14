@@ -728,16 +728,23 @@ export GEMINI_API_KEY=your_actual_key_here"""
         # Step 3: Initialize Gemini LLM for Q&A using LangChain
         llm = initialize_gemini_llm(model_id, api_key, define_parameters())
 
-        # Step 4: Create FAISS index for transcript chunks using LangChain
+        # Step 4: Create embeddings for transcript chunks using the embedding model
         embedding_model = setup_embedding_model(api_key)
-        faiss_index = create_faiss_index(chunks, embedding_model)
+        # The custom `create_faiss_index` returns a tuple: (embeddings_array, chunks_list).
+        # We unpack the embeddings array and reuse the existing `chunks` list.
+        embeddings_array, _ = create_faiss_index(chunks, embedding_model)
 
-        # Step 5: Set up the Q&A prompt and chain using LangChain
-        qa_prompt = create_qa_prompt_template()
-        qa_chain = create_qa_chain(llm, qa_prompt)
-
-        # Step 6: Generate the answer using FAISS index and LangChain
-        answer = generate_answer(user_question, faiss_index, qa_chain)
+        # Step 5: Generate the answer by passing all required components.
+        # FIX: Call generate_answer with all 5 required arguments.
+        # def generate_answer(question, embeddings, chunks, embedding_model, llm, k=7):
+        answer = generate_answer(
+            user_question, 
+            embeddings_array, 
+            chunks, 
+            embedding_model, 
+            llm
+        )
+        
         return answer
     else:
         return "Please provide a valid question and ensure the transcript has been fetched."
